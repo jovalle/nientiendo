@@ -7,13 +7,17 @@ _ensure-wrangler:
     @command -v npm >/dev/null 2>&1 || { echo "npm is required to install Wrangler." >&2; exit 127; }
     @if ! {{wrangler}} --version 2>/dev/null | grep -Eq '^4\.'; then npm install --no-save --no-package-lock wrangler@4; fi
 
+_stage-pages:
+    @rm -rf dist
+    @cp -R site dist
+
 # Serve the Cloudflare Pages site at http://127.0.0.1:8788
-dev: _ensure-wrangler
-    {{wrangler}} pages dev . --ip 127.0.0.1 --port 8788 --compatibility-date 2026-08-23
+dev: _ensure-wrangler _stage-pages
+    {{wrangler}} pages dev dist --ip 127.0.0.1 --port 8788 --compatibility-date 2026-08-23
 
 # Deploy the static site to the production Pages branch
-deploy: _ensure-wrangler
-    {{wrangler}} pages deploy . --project-name nientiendo --branch main
+deploy: _ensure-wrangler _stage-pages
+    {{wrangler}} pages deploy dist --project-name nientiendo --branch main
 
 # Run the NextUI automation contract tests
 test:

@@ -1,5 +1,5 @@
 <div align="center">
-<img src="./assets/nientiendo.png" alt="Nientiendo" width="720"><br/>
+<img src=".github/assets/nientiendo.png" alt="Nientiendo" width="720"><br/>
 </div>
 
 Home to [nientien.do](https://nientien.do), a fun and on-the-nose parody of one of my greatest influences.
