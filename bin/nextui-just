@@ -1,0 +1,14 @@
+#!/bin/sh
+
+for argument do
+  case $argument in
+    -h|--help) exec just ;;
+  esac
+done
+
+bin/nextui "$@"
+exit_code=$?
+if [ "$exit_code" -eq 2 ]; then
+  just
+fi
+exit "$exit_code"

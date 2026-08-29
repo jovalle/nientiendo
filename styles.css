@@ -1,0 +1,204 @@
+@font-face {
+  font-family: 'Michroma';
+  src: url('./assets/fonts/Michroma-Regular.woff2') format('woff2');
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+}
+
+:root {
+  color-scheme: light dark;
+  --shell: #e60012;
+  --ink: #fff;
+}
+
+:root[data-theme='1'] {
+  --shell: #000;
+  --ink: #e60012;
+}
+
+:root[data-theme='2'] {
+  color-scheme: light;
+  --shell: #fff;
+  --ink: #e60012;
+}
+
+:root[data-theme='3'] {
+  --shell: #000;
+  --ink: #fff;
+}
+
+:root[data-theme='4'] {
+  color-scheme: light;
+  --shell: #fff;
+  --ink: #000;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  min-width: 320px;
+  min-height: 100%;
+  margin: 0;
+}
+
+body {
+  min-height: 100vh;
+  min-height: 100svh;
+  overflow: hidden;
+  background: var(--shell);
+  color: var(--ink);
+  font-family: Arial, Helvetica, sans-serif;
+}
+
+.console {
+  position: relative;
+  display: grid;
+  min-height: 100vh;
+  min-height: 100svh;
+  padding: clamp(1.65rem, 4vw, 3.4rem);
+  place-items: center;
+}
+
+.hero {
+  position: relative;
+  display: grid;
+  min-height: 0;
+  place-items: center;
+  text-align: center;
+}
+
+.logo-stage {
+  appearance: none;
+  position: relative;
+  display: grid;
+  width: min(86vw, 64rem, calc((100svh - 9rem) * 3));
+  min-width: 15rem;
+  padding: 0;
+  border: 0;
+  aspect-ratio: 3;
+  background: transparent;
+  cursor: pointer;
+  place-items: center;
+}
+
+.logo {
+  position: absolute;
+  display: block;
+  width: 100%;
+  height: auto;
+  opacity: 0;
+  user-select: none;
+  visibility: hidden;
+}
+
+:root[data-theme='0'] .logo[data-logo='0'],
+:root[data-theme='1'] .logo[data-logo='1'],
+:root[data-theme='2'] .logo[data-logo='2'],
+:root[data-theme='3'] .logo[data-logo='3'],
+:root[data-theme='4'] .logo[data-logo='4'] {
+  opacity: 1;
+  visibility: visible;
+}
+
+.logo-stage:focus-visible,
+.theme-trigger:focus-visible {
+  border-radius: 0.25rem;
+  outline: 2px solid var(--ink);
+  outline-offset: 0.35rem;
+}
+
+.theme-trigger {
+  appearance: none;
+  position: absolute;
+  top: calc(100% + clamp(0.5rem, 2vh, 1.2rem));
+  left: 50%;
+  display: grid;
+  width: 2.75rem;
+  height: 2.75rem;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  font: inherit;
+  font-size: 1.75rem;
+  line-height: 1;
+  place-items: center;
+  transform: translateX(-50%);
+  transition: transform 160ms ease-out;
+}
+
+@media (hover: hover) {
+  .logo-stage:hover {
+    transform: scale(1.015);
+  }
+
+  .theme-trigger:hover {
+    transform: translateX(-50%) scale(1.015);
+  }
+}
+
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+@keyframes theme-scan {
+  from {
+    clip-path: inset(0 0 100%);
+    filter: brightness(1.5) saturate(0.5);
+  }
+
+  to {
+    clip-path: inset(0);
+    filter: brightness(1) saturate(1);
+  }
+}
+
+::view-transition-image-pair(root) {
+  isolation: auto;
+}
+
+::view-transition-old(root),
+::view-transition-new(root) {
+  animation: none;
+  mix-blend-mode: normal;
+}
+
+.is-switching::view-transition-new(root) {
+  z-index: 2;
+  animation: theme-scan 520ms steps(20, end) both;
+}
+
+.is-switching::view-transition-old(root) {
+  z-index: 1;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .theme-trigger {
+    transition: none;
+  }
+
+  ::view-transition-group(*),
+  ::view-transition-old(*),
+  ::view-transition-new(*) {
+    animation: none !important;
+  }
+}
+
+@media (max-width: 34rem) {
+  .console {
+    padding: 1.65rem 1.4rem;
+  }
+}

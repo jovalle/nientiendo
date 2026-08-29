@@ -1,0 +1,9 @@
+repos:
+  - repo: local
+    hooks:
+      - id: check
+        name: lint, format, and test
+        entry: just verify
+        language: system
+        pass_filenames: false
+        always_run: true

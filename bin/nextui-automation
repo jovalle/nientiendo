@@ -1,0 +1,611 @@
+#!/usr/bin/env node
+
+import { createHash } from 'node:crypto';
+import {
+  access,
+  copyFile,
+  lstat,
+  mkdir,
+  open,
+  readFile,
+  readdir,
+  rename,
+  rm,
+  rmdir,
+  stat,
+  unlink,
+  writeFile,
+} from 'node:fs/promises';
+import path from 'node:path';
+import process from 'node:process';
+import { fileURLToPath } from 'node:url';
+import * as prompts from '@clack/prompts';
+import cliProgress from 'cli-progress';
+import { runBackup } from '../lib/backup.mjs';
+import { parseArguments, usage, UsageError } from '../lib/cli-options.mjs';
+import { allowedDevicesForPlatforms, inspectInstalledDevice } from '../lib/device-detection.mjs';
+import { devices, normalizeDevice } from '../lib/device-models.mjs';
+import {
+  isInteractive,
+  promptDevice,
+  promptRoot,
+  promptSource,
+} from '../lib/interactive-options.mjs';
+import { runNextUiCommand } from '../lib/nextui-release.mjs';
+import { renderSvg } from '../lib/render-bmp.mjs';
+
+const projectRoot = fileURLToPath(new URL('../', import.meta.url));
+const manifestName = '.nientiendo-nextui.json';
+const manifestVersion = 1;
+const defaultLogoNames = [
+  'red-on-white.svg',
+  'white-on-red.svg',
+  'red-on-black.svg',
+  'white-on-black.svg',
+  'black-on-white.svg',
+];
+const banner = [
+  '         #########################################' +
+    '#########################################',
+  '      ############################################' +
+    '############################################',
+  '    ######                                        ' +
+    '                                        ######',
+  '  #####                                           ' +
+    '                                           #####',
+  ' ####   ##      ##  ##                            ' +
+    ' ##                           ##             ####',
+  ' ###   ####    ###  ###                      ##   ' +
+    '###                          ####             ###',
+  '####   #####   ###                         ###### ' +
+    '                              ###             ####',
+  '###    ######  ###  ###   #####   ########  ####  ' +
+    '###   ######  ########   ########  ######      ###',
+  '###    #### ## ###  ### ###   ### ###  #### ####  ' +
+    '###  ###  ### ####  ### ###  #### ###  ###     ###',
+  '###    ####  #####  ### ######### ###   ### ####  ' +
+    '### ######### ###   ### ###   ### ###  ####    ###',
+  '####   ####  #####  ### ###    #  ###   ### ####  ' +
+    '### ####   #  ###   ### ###   ### ###  ###    ####',
+  ' ###   ####   ####  ###  ### ###  ###   ### ####  ' +
+    '###  ###  ##  ###   ###  ### #### ###  ###    ###',
+  ' ####   ##     ##   ##    ####     #    ##   ##   ' +
+    ' ##    ####    ##    #    ### ##    ####     ####',
+  '  #####                                           ' +
+    '                                           #####',
+  '    ######                                        ' +
+    '                                        ######',
+  '      ############################################' +
+    '############################################',
+  '         #########################################' +
+    '#########################################',
+].join('\n');
+
+function printBanner(options) {
+  if (!options.json) process.stdout.write(`\n${banner}\n\n`);
+}
+
+function emit(options, type, message, details = {}) {
+  if (options.json) {
+    process.stdout.write(`${JSON.stringify({ type, message, ...details })}\n`);
+  } else {
+    process.stdout.write(`${message}\n`);
+  }
+}
+
+async function exists(filePath) {
+  try {
+    await access(filePath);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function resolveRoot(options, create = false) {
+  if (!options.root) throw new Error('--root is required');
+  const root = path.resolve(options.root);
+  const rootStat = await stat(root).catch(() => null);
+  if (!rootStat && create) {
+    if (!options.dryRun) await mkdir(root, { recursive: true });
+    return root;
+  }
+  if (!rootStat?.isDirectory()) throw new Error(`SD-card root is not a directory: ${root}`);
+  return root;
+}
+
+function relativeToNative(root, relativePath) {
+  const target = path.resolve(root, ...relativePath.split('/'));
+  const fromRoot = path.relative(root, target);
+  if (fromRoot.startsWith('..') || path.isAbsolute(fromRoot)) {
+    throw new Error(`Path escapes the SD-card root: ${relativePath}`);
+  }
+  return target;
+}
+
+function toManifestPath(root, target) {
+  return path.relative(root, target).split(path.sep).join('/');
+}
+
+function emptyManifest() {
+  return {
+    version: manifestVersion,
+    files: [],
+    createdDirectories: [],
+  };
+}
+
+async function readManifest(root) {
+  const manifestPath = path.join(root, manifestName);
+  if (!(await exists(manifestPath))) return emptyManifest();
+
+  let manifest;
+  try {
+    manifest = JSON.parse(await readFile(manifestPath, 'utf8'));
+  } catch (error) {
+    throw new Error(`Cannot read ${manifestPath}: ${error.message}`);
+  }
+
+  if (
+    manifest.version !== manifestVersion ||
+    !Array.isArray(manifest.files) ||
+    !Array.isArray(manifest.createdDirectories)
+  ) {
+    throw new Error(`Unsupported or invalid manifest: ${manifestPath}`);
+  }
+  return manifest;
+}
+
+async function writeManifest(root, manifest, options) {
+  if (options.dryRun) return;
+  const manifestPath = path.join(root, manifestName);
+  if (manifest.files.length === 0 && manifest.createdDirectories.length === 0) {
+    await rm(manifestPath, { force: true });
+    return;
+  }
+
+  const temporaryPath = `${manifestPath}.tmp-${process.pid}`;
+  await writeFile(temporaryPath, `${JSON.stringify(manifest, null, 2)}\n`);
+  await rename(temporaryPath, manifestPath);
+}
+
+async function ensureDirectory(root, directory, manifest, options) {
+  const relativeDirectory = path.relative(root, directory);
+  const segments = relativeDirectory ? relativeDirectory.split(path.sep) : [];
+  let current = root;
+
+  for (const segment of segments) {
+    current = path.join(current, segment);
+    const currentStat = await lstat(current).catch(() => null);
+    if (currentStat) {
+      if (!currentStat.isDirectory() || currentStat.isSymbolicLink()) {
+        throw new Error(`Destination component is not a real directory: ${current}`);
+      }
+      continue;
+    }
+
+    const manifestPath = toManifestPath(root, current);
+    if (!options.dryRun) await mkdir(current);
+    if (!manifest.createdDirectories.includes(manifestPath)) {
+      manifest.createdDirectories.push(manifestPath);
+    }
+  }
+}
+
+function sha256(data) {
+  return createHash('sha256').update(data).digest('hex');
+}
+
+async function hashFile(filePath) {
+  const hash = createHash('sha256');
+  const file = await open(filePath, 'r');
+  try {
+    for await (const chunk of file.readableWebStream()) hash.update(chunk);
+  } finally {
+    await file.close().catch(() => {});
+  }
+  return hash.digest('hex');
+}
+
+async function confirmReplacement(target, options) {
+  if (options.yes) return true;
+  if (!isInteractive(options)) {
+    throw new Error(`Refusing to replace unowned file without --yes: ${target}`);
+  }
+  const confirmed = await prompts.confirm({
+    message: `Replace existing ${target} and keep a restorable backup?`,
+    initialValue: false,
+  });
+  if (prompts.isCancel(confirmed) || !confirmed) throw new Error('Installation cancelled');
+  return true;
+}
+
+async function writeOwnedFile({ root, relativePath, bmp, device, source, manifest, options }) {
+  const target = relativeToNative(root, relativePath);
+  const targetDirectory = path.dirname(target);
+  const digest = sha256(bmp);
+  let record = manifest.files.find((entry) => entry.path === relativePath);
+  const targetStat = await lstat(target).catch(() => null);
+
+  if (targetStat?.isSymbolicLink() || (targetStat && !targetStat.isFile())) {
+    throw new Error(`Destination is not a regular file: ${target}`);
+  }
+
+  if (targetStat) {
+    const currentDigest = await hashFile(target);
+    if (record && currentDigest === digest) {
+      record = { ...record, sha256: digest, device, source: path.basename(source) };
+      manifest.files = manifest.files.map((entry) =>
+        entry.path === relativePath ? record : entry,
+      );
+      return { status: 'unchanged', target };
+    }
+
+    if (!record) {
+      await confirmReplacement(target, options);
+      const backupPath = `${relativePath}.nientiendo-backup`;
+      const backupTarget = relativeToNative(root, backupPath);
+      if (await exists(backupTarget)) {
+        throw new Error(`Backup path already exists: ${backupTarget}`);
+      }
+      if (!options.dryRun) await copyFile(target, backupTarget);
+      record = { path: relativePath, backupPath };
+    }
+  }
+
+  await ensureDirectory(root, targetDirectory, manifest, options);
+  if (!options.dryRun) {
+    const temporaryPath = path.join(
+      targetDirectory,
+      `.${path.basename(target)}.tmp-${process.pid}`,
+    );
+    try {
+      await writeFile(temporaryPath, bmp);
+      await rename(temporaryPath, target);
+    } finally {
+      await rm(temporaryPath, { force: true });
+    }
+  }
+
+  const updatedRecord = {
+    ...record,
+    path: relativePath,
+    sha256: digest,
+    device,
+    source: path.basename(source),
+  };
+  manifest.files = [
+    ...manifest.files.filter((entry) => entry.path !== relativePath),
+    updatedRecord,
+  ];
+  return { status: targetStat ? 'updated' : 'created', target };
+}
+
+async function reconcileOwnedFiles(root, device, desiredPaths, manifest, options) {
+  const obsolete = manifest.files.filter(
+    (record) => record.device === device && !desiredPaths.has(record.path),
+  );
+
+  for (const record of obsolete) {
+    const target = relativeToNative(root, record.path);
+    const targetStat = await lstat(target).catch(() => null);
+    if (
+      targetStat?.isSymbolicLink() ||
+      (targetStat && !targetStat.isFile()) ||
+      (targetStat && (await hashFile(target)) !== record.sha256)
+    ) {
+      emit(options, 'preserved', `Preserved modified file: ${target}`, { path: record.path });
+      continue;
+    }
+
+    if (!options.dryRun && targetStat) await unlink(target);
+    if (record.backupPath) {
+      const backup = relativeToNative(root, record.backupPath);
+      if (!options.dryRun && (await exists(backup))) await rename(backup, target);
+    }
+    manifest.files = manifest.files.filter((entry) => entry.path !== record.path);
+  }
+}
+
+async function renderSources({ root, device, sources, options, reconcile = false }) {
+  const model = devices[device];
+  const manifest = await readManifest(root);
+  const results = [];
+  const desiredPaths = new Set();
+  let progressBar;
+
+  if (sources.length > 1 && isInteractive(options)) {
+    progressBar = new cliProgress.SingleBar(
+      {
+        format: 'Rendering [{bar}] {value}/{total} {filename}',
+        hideCursor: true,
+        clearOnComplete: false,
+        noTTYOutput: true,
+      },
+      cliProgress.Presets.shades_classic,
+    );
+    progressBar.start(sources.length, 0, { filename: '' });
+  }
+
+  try {
+    for (const [index, sourceValue] of sources.entries()) {
+      const source = path.resolve(sourceValue);
+      progressBar?.update({ filename: path.basename(source) });
+      const bmp = await renderSvg(source, model);
+      const outputName = `Nientiendo ${index + 1}.bmp`;
+      const relativePath = path.posix.join(model.relativeDirectory, outputName);
+      desiredPaths.add(relativePath);
+      const result = await writeOwnedFile({
+        root,
+        relativePath,
+        bmp,
+        device,
+        source,
+        manifest,
+        options,
+      });
+      results.push(result);
+      progressBar?.increment(1, { filename: outputName });
+    }
+  } finally {
+    progressBar?.stop();
+  }
+
+  if (reconcile) await reconcileOwnedFiles(root, device, desiredPaths, manifest, options);
+  manifest.device = device;
+  await writeManifest(root, manifest, options);
+  return results;
+}
+
+async function runWithSpinner(options, message, task) {
+  if (!isInteractive(options)) return task();
+  const spinner = prompts.spinner();
+  spinner.start(message);
+  try {
+    const result = await task();
+    spinner.stop(message);
+    return result;
+  } catch (error) {
+    spinner.stop(`${message} failed`);
+    throw error;
+  }
+}
+
+async function detectDevice(root, options) {
+  if (options.device) {
+    return { device: normalizeDevice(options.device), source: 'explicit --device option' };
+  }
+
+  const inspection = await inspectInstalledDevice(root);
+  if (inspection.candidates.length === 1 && inspection.activePlatforms.length <= 1) {
+    const device = inspection.candidates[0];
+    const evidence = inspection.evidence.find((item) => item.device === device);
+    return {
+      device,
+      source: `${evidence.kind} ${evidence.source}`,
+    };
+  }
+
+  const allowed = allowedDevicesForPlatforms(inspection.activePlatforms);
+  if (isInteractive(options)) {
+    const reason =
+      inspection.activePlatforms.length > 1
+        ? `runtime userdata exists for multiple platforms: ${inspection.activePlatforms.join(', ')}`
+        : inspection.candidates.length > 1
+          ? `conflicting runtime evidence: ${inspection.candidates.join(', ')}`
+          : inspection.activePlatforms.length > 0
+            ? `runtime platform ${inspection.activePlatforms.join(', ')} has no model tag`
+            : 'no runtime device evidence found';
+    return { device: await promptDevice(allowed), source: `user selection; ${reason}` };
+  }
+
+  const reason =
+    inspection.activePlatforms.length > 1
+      ? `Runtime userdata exists for multiple platforms: ${inspection.activePlatforms.join(', ')}.`
+      : inspection.candidates.length > 1
+        ? `Conflicting runtime device evidence: ${inspection.candidates.join(', ')}.`
+        : 'No unique runtime device evidence was found.';
+  throw new Error(`${reason} Pass --device with one of: ${allowed.join(', ')}.`);
+}
+
+function reportDeviceResolution(root, resolution, options) {
+  const { device, source } = resolution;
+  const destination = relativeToNative(root, devices[device].relativeDirectory);
+  emit(options, 'model', `Model: ${devices[device].label} (${device})`, {
+    device,
+    label: devices[device].label,
+    source,
+  });
+  emit(options, 'resolution', `Resolved from: ${source}`, { device, source });
+  emit(options, 'destination', `Destination: ${destination}`, { device, destination });
+}
+
+async function defaultSources() {
+  const logoDirectory = path.join(projectRoot, 'assets', 'logo');
+  return defaultLogoNames.map((name) => path.join(logoDirectory, name));
+}
+
+async function assertCarouselExists(root, device) {
+  const destination = relativeToNative(root, devices[device].relativeDirectory);
+  const destinationStat = await stat(destination).catch(() => null);
+  if (!destinationStat?.isDirectory()) {
+    throw new Error(
+      `NextUI Bootlogo carousel is missing for ${devices[device].label}: ${destination}`,
+    );
+  }
+}
+
+async function findFallbackCandidates(root) {
+  const directories = new Set(Object.values(devices).map((device) => device.relativeDirectory));
+  const candidates = [];
+  for (const relativeDirectory of directories) {
+    const directory = relativeToNative(root, relativeDirectory);
+    const entries = await readdir(directory, { withFileTypes: true }).catch(() => []);
+    for (const entry of entries) {
+      if (entry.isFile() && /^Nientiendo(?:\s|$).*\.bmp$/i.test(entry.name)) {
+        candidates.push(path.posix.join(relativeDirectory, entry.name));
+      }
+    }
+  }
+  return candidates;
+}
+
+async function cleanup(root, options) {
+  const manifestPath = path.join(root, manifestName);
+  const hasManifest = await exists(manifestPath);
+  const manifest = await readManifest(root);
+
+  if (!hasManifest) {
+    const candidates = await findFallbackCandidates(root);
+    if (candidates.length === 0) return { removed: 0, preserved: 0 };
+    candidates.forEach((candidate) => emit(options, 'candidate', candidate, { path: candidate }));
+    if (!options.yes) {
+      if (!isInteractive(options)) {
+        throw new Error('Untracked Nientiendo BMPs found; rerun with --yes to remove them.');
+      }
+      const confirmed = await prompts.confirm({
+        message: `Remove these ${candidates.length} untracked Nientiendo BMP files?`,
+        initialValue: false,
+      });
+      if (prompts.isCancel(confirmed) || !confirmed) throw new Error('Cleanup cancelled');
+    }
+    if (!options.dryRun) {
+      await Promise.all(candidates.map((candidate) => unlink(relativeToNative(root, candidate))));
+    }
+    return { removed: candidates.length, preserved: 0 };
+  }
+
+  let removed = 0;
+  let preserved = 0;
+  const remainingFiles = [];
+  for (const record of manifest.files) {
+    const target = relativeToNative(root, record.path);
+    const targetStat = await lstat(target).catch(() => null);
+    if (targetStat?.isSymbolicLink() || (targetStat && !targetStat.isFile())) {
+      remainingFiles.push(record);
+      preserved += 1;
+      continue;
+    }
+
+    if (targetStat && (await hashFile(target)) !== record.sha256) {
+      remainingFiles.push(record);
+      preserved += 1;
+      emit(options, 'preserved', `Preserved modified file: ${target}`, { path: record.path });
+      continue;
+    }
+
+    if (!options.dryRun && targetStat) await unlink(target);
+    if (record.backupPath) {
+      const backup = relativeToNative(root, record.backupPath);
+      if (await exists(backup)) {
+        if (!options.dryRun) await rename(backup, target);
+      }
+    }
+    removed += targetStat ? 1 : 0;
+  }
+
+  manifest.files = remainingFiles;
+  if (remainingFiles.length === 0) {
+    const createdDirectories = [...manifest.createdDirectories].sort(
+      (left, right) => right.split('/').length - left.split('/').length,
+    );
+    for (const relativeDirectory of createdDirectories) {
+      if (options.dryRun) continue;
+      await rmdir(relativeToNative(root, relativeDirectory)).catch((error) => {
+        if (error.code !== 'ENOENT' && error.code !== 'ENOTEMPTY') throw error;
+      });
+    }
+    manifest.createdDirectories = [];
+  }
+  await writeManifest(root, manifest, options);
+  return { removed, preserved };
+}
+
+async function main() {
+  const options = parseArguments(process.argv.slice(2));
+  if (options.noColor) process.env.NO_COLOR = '1';
+  printBanner(options);
+  if (options.command === 'help') {
+    process.stdout.write(`${usage()}\n`);
+    return;
+  }
+  if (
+    !new Set([
+      'install',
+      'update',
+      'check',
+      'backup',
+      'logos',
+      'detect',
+      'render',
+      'cleanup',
+      'uninstall',
+    ]).has(options.command)
+  ) {
+    throw new UsageError(`Unknown command: ${options.command}`);
+  }
+
+  if (options.command === 'backup') {
+    await runBackup(options, emit);
+    return;
+  }
+
+  if (new Set(['install', 'update', 'check']).has(options.command)) {
+    await runNextUiCommand(options, emit);
+    return;
+  }
+
+  if (!options.root) {
+    if (!isInteractive(options)) throw new UsageError('--root is required');
+    options.root = await promptRoot();
+  }
+  const root = await resolveRoot(options, options.command === 'render');
+  if (options.command === 'detect') {
+    const { device } = await detectDevice(root, options);
+    emit(options, 'device', device, { device, label: devices[device].label });
+    return;
+  }
+
+  if (options.command === 'cleanup' || options.command === 'uninstall') {
+    const result = await runWithSpinner(options, 'Removing Nientiendo boot logos', () =>
+      cleanup(root, options),
+    );
+    emit(options, 'complete', `Removed ${result.removed}; preserved ${result.preserved}.`, result);
+    return;
+  }
+
+  if (options.command === 'render') {
+    const resolution = await detectDevice(root, options);
+    const { device } = resolution;
+    if (options.sources.length === 0) {
+      if (!isInteractive(options)) throw new UsageError('render requires --source');
+      options.sources = [await promptSource(await defaultSources())];
+    }
+    if (options.sources.length !== 1) throw new UsageError('render requires exactly one --source');
+    reportDeviceResolution(root, resolution, options);
+    const results = await runWithSpinner(options, 'Rendering boot logo', () =>
+      renderSources({ root, device, sources: options.sources, options }),
+    );
+    emit(options, 'complete', `${results[0].status}: ${results[0].target}`, results[0]);
+    return;
+  }
+
+  const resolution = await detectDevice(root, options);
+  const { device } = resolution;
+  await assertCarouselExists(root, device);
+  const sources = options.sources.length > 0 ? options.sources : await defaultSources();
+  if (sources.length === 0) throw new Error('No SVG sources found');
+  reportDeviceResolution(root, resolution, options);
+  const results = await renderSources({ root, device, sources, options, reconcile: true });
+  const changed = results.filter((result) => result.status !== 'unchanged').length;
+  emit(options, 'complete', `Installed ${changed}; unchanged ${results.length - changed}.`, {
+    device,
+    changed,
+    unchanged: results.length - changed,
+  });
+}
+
+main().catch((error) => {
+  process.stderr.write(`nextui: ${error.message}\n`);
+  process.exitCode = error instanceof UsageError ? 2 : 1;
+});

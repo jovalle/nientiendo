@@ -1,0 +1,5 @@
+# device	output-directory	width	height
+brick	Tools/tg5040/Bootlogo.pak/brick	1024	768
+brickpro	Tools/tg5040/Bootlogo.pak/brick	1024	768
+smartpro	Tools/tg5040/Bootlogo.pak/smartpro	1280	720
+smartpros	Tools/tg5050/Bootlogo.pak/smartpro	1280	720
