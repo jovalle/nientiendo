@@ -131,12 +131,15 @@ body {
   background: transparent;
   color: inherit;
   cursor: pointer;
-  font: inherit;
-  font-size: 1.75rem;
-  line-height: 1;
   place-items: center;
   transform: translateX(-50%);
   transition: transform 160ms ease-out;
+}
+
+.theme-mark {
+  display: block;
+  width: 2.25rem;
+  fill: currentColor;
 }
 
 @media (hover: hover) {
