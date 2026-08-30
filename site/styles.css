@@ -49,9 +49,12 @@ body {
   min-height: 100vh;
   min-height: 100svh;
   overflow: hidden;
-  background: var(--shell);
+  background-color: var(--shell);
   color: var(--ink);
   font-family: Arial, Helvetica, sans-serif;
+  transition:
+    background-color 520ms ease,
+    color 520ms ease;
 }
 
 .console {
@@ -93,6 +96,9 @@ body {
   opacity: 0;
   user-select: none;
   visibility: hidden;
+  transition:
+    opacity 520ms ease,
+    visibility 0s linear 520ms;
 }
 
 :root[data-theme='0'] .logo[data-logo='0'],
@@ -102,6 +108,7 @@ body {
 :root[data-theme='4'] .logo[data-logo='4'] {
   opacity: 1;
   visibility: visible;
+  transition-delay: 0s;
 }
 
 .logo-stage:focus-visible,
@@ -186,6 +193,11 @@ body {
 }
 
 @media (prefers-reduced-motion: reduce) {
+  body,
+  .logo {
+    transition: none;
+  }
+
   .theme-trigger {
     transition: none;
   }
