@@ -1,9 +1,9 @@
 const themes = [
-  { logo: './assets/logo/white-on-red.svg', background: '#e60012' },
-  { logo: './assets/logo/red-on-black.svg', background: '#000000' },
-  { logo: './assets/logo/red-on-white.svg', background: '#ffffff' },
-  { logo: './assets/logo/white-on-black.svg', background: '#000000' },
-  { logo: './assets/logo/black-on-white.svg', background: '#ffffff' },
+  { logo: './assets/logo/white.svg', background: '#e60012' },
+  { logo: './assets/logo/red.svg', background: '#000000' },
+  { logo: './assets/logo/red.svg', background: '#ffffff' },
+  { logo: './assets/logo/white.svg', background: '#000000' },
+  { logo: './assets/logo/black.svg', background: '#ffffff' },
 ];
 
 const root = document.documentElement;
